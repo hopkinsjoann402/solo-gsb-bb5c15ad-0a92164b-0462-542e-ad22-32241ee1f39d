@@ -27,6 +27,7 @@ from .schemas import (
     IncidentsOut,
     IngestResponse,
     IngestSummary,
+    PeerDeviationOut,
     PropagationOut,
     ReadingIn,
     ReadingOutliersOut,
@@ -72,9 +73,14 @@ app = FastAPI(
         "时刻按周期生成应采时隙，容差扩展范围内的已合并读数与时隙按时间"
         "顺序一对一匹配（读数优先覆盖最早可覆盖时隙），输出应采/已覆盖数、"
         "覆盖率与连续缺测时隙合并的缺口（只读）；并提供展柜采集质量审计：按断档切段，以邻点"
-        "中位数与 MAD 稳健尺度定位孤立异常温湿度读数（只读）。"
+        "中位数与 MAD 稳健尺度定位孤立异常温湿度读数（只读）；并提供展柜同伴基线"
+        "偏离查询：以查询起点为原点生成等距时刻网格，目标展柜与 2～10 个对照"
+        "展柜各自在相邻读数间隔不超过最大断档时线性插值，每刻至少两个有效"
+        "对照值才取中位数作基线，目标值与基线差的绝对值达到阈值即标记偏离，"
+        "连续标记合并为时段，仅返回持续时间达标的时段及最大偏离值、峰值时刻"
+        "与方向（只读）。"
     ),
-    version="1.9.0",
+    version="1.10.0",
     lifespan=lifespan,
 )
 
@@ -708,6 +714,75 @@ def get_propagation(
         max_lag_seconds=max_lag_seconds,
         max_gap_seconds=max_gap_seconds,
     )
+
+
+# ---------- 展柜同伴基线偏离查询 ----------
+
+
+@app.get(
+    "/api/v1/cases/{device_sn}/peer-deviation",
+    response_model=PeerDeviationOut,
+    tags=["cases"],
+    summary="同伴基线偏离：等距网格插值 + 对照中位数基线 + 连续偏离时段（只读）",
+)
+def get_peer_deviation(
+    device_sn: str,
+    reference_sn: list[str] = Query(
+        ...,
+        min_length=2,
+        max_length=10,
+        description="对照展柜序号（2～10 个，重复参数传入）；不得重复、不得包含目标展柜",
+    ),
+    dimension: str = Query(
+        ...,
+        pattern="^(temperature|humidity)$",
+        description="分析维度：temperature（温度）/ humidity（湿度）",
+    ),
+    start: dt.datetime = Query(..., description="起始时间（含），ISO8601；等距网格原点"),
+    end: dt.datetime = Query(..., description="结束时间（含），ISO8601；网格时刻不晚于该时刻"),
+    step_seconds: float = Query(
+        ..., gt=0.0, description="等距网格步长（秒，必须为正）"
+    ),
+    max_gap_seconds: float = Query(
+        ..., gt=0.0, description="允许的最大相邻读数间隔（秒）；超过则该柜该刻插值无效"
+    ),
+    deviation_threshold: float = Query(
+        ...,
+        gt=0.0,
+        description="偏离阈值（单位随维度，必须为正）：|目标值 − 基线| ≥ 该值（含等于）即标记偏离",
+    ),
+    min_duration_seconds: float = Query(
+        0.0,
+        ge=0.0,
+        description="偏离时段最短持续秒数（含等于）；更短的时段不返回",
+    ),
+    db: Session = Depends(get_db),
+):
+    if len(set(reference_sn)) != len(reference_sn):
+        raise HTTPException(status_code=422, detail="对照展柜序号不得重复")
+    if device_sn in reference_sn:
+        raise HTTPException(status_code=422, detail="对照展柜不得包含目标展柜")
+
+    start_utc = _parse_ts(start)
+    end_utc = _parse_ts(end)
+    if start_utc > end_utc:
+        raise HTTPException(status_code=422, detail="start 不能晚于 end")
+
+    out = services.build_case_peer_deviation(
+        db,
+        device_sn,
+        list(reference_sn),
+        dimension=dimension,
+        start=start_utc,
+        end=end_utc,
+        step_seconds=step_seconds,
+        max_gap_seconds=max_gap_seconds,
+        deviation_threshold=deviation_threshold,
+        min_duration_seconds=min_duration_seconds,
+    )
+    if out is None:
+        raise HTTPException(status_code=404, detail="展柜不存在或尚无读数")
+    return out
 
 
 # ---------- 锚点校准 ----------

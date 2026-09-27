@@ -13,6 +13,7 @@ from . import condensation as cond
 from . import excursions as exc
 from . import incidents as inc
 from . import outliers as ol
+from . import peer as peer_
 from . import propagation as prop
 from . import recovery as rec
 from . import sampling as samp
@@ -33,6 +34,8 @@ from .schemas import (
     IncidentBoundaryOut,
     IncidentOut,
     IncidentsOut,
+    PeerDeviationOut,
+    PeerDeviationPeriodOut,
     PropagationLagOut,
     PropagationOut,
     ReadingIn,
@@ -1046,6 +1049,75 @@ def build_propagation(
         best_lag_seconds=result.best_lag_seconds,
         best_correlation=result.best_correlation,
         direction=result.direction,
+    )
+
+
+# ---------- 展柜同伴基线偏离查询 ----------
+
+
+def build_case_peer_deviation(
+    db: Session,
+    device_sn: str,
+    reference_sns: list[str],
+    *,
+    dimension: str,
+    start: dt.datetime,
+    end: dt.datetime,
+    step_seconds: float,
+    max_gap_seconds: float,
+    deviation_threshold: float,
+    min_duration_seconds: float,
+) -> PeerDeviationOut | None:
+    """目标展柜相对对照组中位数基线的偏离时段（只读计算，不落库）。
+
+    目标展柜没有任何读数时返回 ``None``（由上层判 404）；对照展柜
+    不存在或没有读数时不报错——该对照在任何时刻都不贡献有效值，
+    若因此每刻有效对照值不足两个，结果自然为空时段列表。
+    """
+    target_samples = _load_samples(db, device_sn)
+    if not target_samples:
+        return None
+    reference_samples = [_load_samples(db, sn) for sn in reference_sns]
+
+    result = peer_.compute_peer_deviation(
+        target_samples,
+        reference_samples,
+        dimension=dimension,
+        start=start,
+        end=end,
+        step_seconds=step_seconds,
+        max_gap_seconds=max_gap_seconds,
+        deviation_threshold=deviation_threshold,
+        min_duration_seconds=min_duration_seconds,
+    )
+    return PeerDeviationOut(
+        device_sn=device_sn,
+        reference_sns=list(reference_sns),
+        dimension=dimension,
+        start=start,
+        end=end,
+        step_seconds=step_seconds,
+        max_gap_seconds=max_gap_seconds,
+        deviation_threshold=deviation_threshold,
+        min_duration_seconds=min_duration_seconds,
+        grid_point_count=result.grid_point_count,
+        target_valid_count=result.target_valid_count,
+        baseline_valid_count=result.baseline_valid_count,
+        evaluated_count=result.evaluated_count,
+        deviation_count=result.deviation_count,
+        period_count=len(result.periods),
+        periods=[
+            PeerDeviationPeriodOut(
+                start_ts=p.start_ts,
+                end_ts=p.end_ts,
+                duration_seconds=p.duration_seconds,
+                point_count=p.point_count,
+                max_deviation=p.max_deviation,
+                peak_ts=p.peak_ts,
+                direction=p.direction,
+            )
+            for p in result.periods
+        ],
     )
 
 

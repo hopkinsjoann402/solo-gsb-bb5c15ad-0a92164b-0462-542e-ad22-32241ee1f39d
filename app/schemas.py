@@ -465,6 +465,62 @@ class SamplingCoverageOut(BaseModel):
     gaps: list[SamplingGapOut] = Field(..., description="缺口列表，按起点时刻升序")
 
 
+PeerDeviationDimension = Literal["temperature", "humidity"]
+PeerDeviationDirection = Literal[
+    "above",  # 峰值处目标值高于对照基线
+    "below",  # 峰值处目标值低于对照基线
+]
+
+
+class PeerDeviationPeriodOut(BaseModel):
+    start_ts: dt.datetime = Field(..., description="时段起点：段内首个被标记的网格时刻（UTC）")
+    end_ts: dt.datetime = Field(..., description="时段终点：段内末个被标记的网格时刻（UTC）")
+    duration_seconds: float = Field(..., description="时段持续秒数（end_ts − start_ts）")
+    point_count: int = Field(..., description="时段内被标记偏离的网格时刻数")
+    max_deviation: float = Field(
+        ..., description="时段内 |目标值 − 基线| 的最大值（单位随维度：°C / %RH）"
+    )
+    peak_ts: dt.datetime = Field(
+        ..., description="最大偏离对应的网格时刻（并列取最早）"
+    )
+    direction: PeerDeviationDirection = Field(
+        ..., description="峰值处目标相对基线的方向：above（高于）/ below（低于）"
+    )
+
+
+class PeerDeviationOut(BaseModel):
+    device_sn: str = Field(..., description="目标展柜设备序号")
+    reference_sns: list[str] = Field(
+        ..., description="对照展柜序号（2～10 个，与请求顺序一致）"
+    )
+    dimension: PeerDeviationDimension
+    start: dt.datetime = Field(..., description="实际生效的起始时间（UTC）：网格原点")
+    end: dt.datetime = Field(..., description="实际生效的结束时间（UTC）：网格时刻不晚于该时刻")
+    step_seconds: float = Field(..., description="等距网格步长（秒）")
+    max_gap_seconds: float = Field(
+        ..., description="允许的最大相邻读数间隔（秒）；超过则该柜该刻插值无效"
+    )
+    deviation_threshold: float = Field(
+        ..., description="偏离阈值（单位随维度）：|目标值 − 基线| ≥ 该值（含等于）即标记"
+    )
+    min_duration_seconds: float = Field(
+        ..., description="偏离时段最短持续秒数（含等于）；更短的时段不返回"
+    )
+    grid_point_count: int = Field(..., description="网格时刻总数")
+    target_valid_count: int = Field(..., description="目标展柜插值有效的时刻数")
+    baseline_valid_count: int = Field(
+        ..., description="有效对照值 ≥ 2、可形成中位数基线的时刻数"
+    )
+    evaluated_count: int = Field(
+        ..., description="目标与基线同时有效、实际参与判定的时刻数"
+    )
+    deviation_count: int = Field(..., description="被标记偏离的时刻数")
+    period_count: int = Field(..., description="持续时间达标的偏离时段数")
+    periods: list[PeerDeviationPeriodOut] = Field(
+        ..., description="偏离时段列表，按起点时刻升序"
+    )
+
+
 class HealthOut(BaseModel):
     status: str
     db: str
