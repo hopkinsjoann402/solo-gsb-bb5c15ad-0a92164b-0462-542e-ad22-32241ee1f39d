@@ -465,6 +465,55 @@ class SamplingCoverageOut(BaseModel):
     gaps: list[SamplingGapOut] = Field(..., description="缺口列表，按起点时刻升序")
 
 
+DeviationDirection = Literal[
+    "up",    # 峰值处目标值高于对照基线
+    "down",  # 峰值处目标值低于对照基线
+]
+
+
+class DeviationPeriodOut(BaseModel):
+    start_ts: dt.datetime = Field(..., description="时段起点：首个被标记偏离的网格时刻（UTC）")
+    end_ts: dt.datetime = Field(..., description="时段终点：末个被标记偏离的网格时刻（UTC）")
+    duration_seconds: float = Field(..., description="持续秒数（end_ts − start_ts）")
+    marked_count: int = Field(..., description="该时段内被标记偏离的网格点数")
+    direction: DeviationDirection = Field(
+        ..., description="峰值偏离方向：up（目标高于基线）/ down（目标低于基线）"
+    )
+    max_deviation: float = Field(
+        ..., description="时段内最大绝对偏离（|目标值 − 对照中位数基线|）"
+    )
+    peak_ts: dt.datetime = Field(
+        ..., description="最大偏离出现的网格时刻（并列取最早）"
+    )
+
+
+class PeerBaselineDeviationOut(BaseModel):
+    target_sn: str = Field(..., description="目标展柜设备序号")
+    peer_sns: list[str] = Field(..., description="对照展柜设备序号（2～10 个，按请求顺序）")
+    dimension: ExcursionDimension = Field(..., description="分析维度：temperature / humidity")
+    start: dt.datetime = Field(..., description="实际生效的起始时间（UTC）：等距网格原点")
+    end: dt.datetime = Field(..., description="实际生效的结束时间（UTC）：网格时刻不晚于该时刻")
+    step_seconds: float = Field(..., description="等距网格步长（秒）")
+    max_gap_seconds: float = Field(
+        ..., description="允许的最大相邻读数间隔（秒）；超过则该插值点无效"
+    )
+    deviation_threshold: float = Field(
+        ..., description="偏离阈值：|目标值 − 基线| 达到该值（含等于）即标记偏离"
+    )
+    min_duration_seconds: float = Field(
+        ..., description="偏离时段最短持续秒数（含等于）；更短的时段不返回"
+    )
+    grid_point_count: int = Field(..., description="查询窗内等距网格点数")
+    evaluated_count: int = Field(
+        ..., description="目标有效且对照有效值不少于两个、实际完成偏离判定的网格点数"
+    )
+    marked_count: int = Field(..., description="被标记偏离的网格点总数")
+    period_count: int = Field(..., description="持续时间达标的偏离时段数")
+    periods: list[DeviationPeriodOut] = Field(
+        ..., description="偏离时段列表，按起点时刻升序"
+    )
+
+
 class HealthOut(BaseModel):
     status: str
     db: str

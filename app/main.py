@@ -27,6 +27,7 @@ from .schemas import (
     IncidentsOut,
     IngestResponse,
     IngestSummary,
+    PeerBaselineDeviationOut,
     PropagationOut,
     ReadingIn,
     ReadingOutliersOut,
@@ -72,9 +73,13 @@ app = FastAPI(
         "时刻按周期生成应采时隙，容差扩展范围内的已合并读数与时隙按时间"
         "顺序一对一匹配（读数优先覆盖最早可覆盖时隙），输出应采/已覆盖数、"
         "覆盖率与连续缺测时隙合并的缺口（只读）；并提供展柜采集质量审计：按断档切段，以邻点"
-        "中位数与 MAD 稳健尺度定位孤立异常温湿度读数（只读）。"
+        "中位数与 MAD 稳健尺度定位孤立异常温湿度读数（只读）；并提供展柜同伴基线"
+        "偏离查询：以查询起点为原点生成等距网格，目标与 2～10 个对照展柜各自"
+        "在断档约束下线性插值，每刻至少两个有效对照值取中位数为基线，目标值"
+        "与基线差的绝对值达到阈值即标记偏离，连续标记合并为时段并按最短持续"
+        "时间过滤，返回最大偏离、峰值时刻与方向（只读）。"
     ),
-    version="1.9.0",
+    version="1.10.0",
     lifespan=lifespan,
 )
 
@@ -708,6 +713,80 @@ def get_propagation(
         max_lag_seconds=max_lag_seconds,
         max_gap_seconds=max_gap_seconds,
     )
+
+
+# ---------- 展柜同伴基线偏离 ----------
+
+
+@app.get(
+    "/api/v1/peer-baseline-deviation",
+    response_model=PeerBaselineDeviationOut,
+    tags=["deviation"],
+    summary="展柜同伴基线偏离：等距网格 + 对照中位数基线 + 持续偏离时段（只读）",
+)
+def get_peer_baseline_deviation(
+    target_sn: str = Query(
+        ..., min_length=1, max_length=64, description="目标展柜设备序号"
+    ),
+    peer_sn: list[str] = Query(
+        ...,
+        description="对照展柜设备序号（2～10 个，重复传入该参数）；不得重复、不得包含目标展柜",
+    ),
+    dimension: str = Query(
+        ...,
+        pattern="^(temperature|humidity)$",
+        description="分析维度：temperature（温度）/ humidity（湿度）",
+    ),
+    start: dt.datetime = Query(..., description="起始时间（含），ISO8601；等距网格原点"),
+    end: dt.datetime = Query(..., description="结束时间（含），ISO8601；网格时刻不晚于该时刻"),
+    step_seconds: float = Query(
+        ..., gt=0.0, description="等距网格步长（秒，必须为正）"
+    ),
+    deviation_threshold: float = Query(
+        ..., gt=0.0, description="偏离阈值（必须为正）：|目标值 − 基线| 达到该值（含等于）即标记"
+    ),
+    min_duration_seconds: float = Query(
+        0.0,
+        ge=0.0,
+        description="偏离时段最短持续时间（秒，含等于）；更短的时段不返回",
+    ),
+    max_gap_seconds: float = Query(
+        600.0,
+        gt=0.0,
+        description="允许的最大相邻读数间隔（秒）；超过则该插值点无效（恰好等于仍连续）",
+    ),
+    db: Session = Depends(get_db),
+):
+    peers = list(peer_sn)
+    if not 2 <= len(peers) <= 10:
+        raise HTTPException(status_code=422, detail="对照展柜数量必须在 2～10 个之间")
+    if any(not p or len(p) > 64 for p in peers):
+        raise HTTPException(status_code=422, detail="对照展柜编号长度必须在 1～64 字符之间")
+    if len(set(peers)) != len(peers):
+        raise HTTPException(status_code=422, detail="对照展柜编号不能重复")
+    if target_sn in peers:
+        raise HTTPException(status_code=422, detail="对照展柜不能包含目标展柜")
+
+    start_utc = _parse_ts(start)
+    end_utc = _parse_ts(end)
+    if start_utc > end_utc:
+        raise HTTPException(status_code=422, detail="start 不能晚于 end")
+
+    out = services.build_peer_baseline_deviation(
+        db,
+        target_sn,
+        peers,
+        dimension,
+        start_utc,
+        end_utc,
+        step_seconds,
+        max_gap_seconds,
+        deviation_threshold,
+        min_duration_seconds,
+    )
+    if out is None:
+        raise HTTPException(status_code=404, detail="展柜不存在或尚无读数")
+    return out
 
 
 # ---------- 锚点校准 ----------

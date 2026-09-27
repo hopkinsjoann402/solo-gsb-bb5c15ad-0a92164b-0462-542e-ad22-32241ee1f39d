@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from . import calibration as cal
 from . import condensation as cond
+from . import deviation as dev
 from . import excursions as exc
 from . import incidents as inc
 from . import outliers as ol
@@ -26,6 +27,7 @@ from .schemas import (
     CalibratedTimelineOut,
     CondensationRiskOut,
     CondensationWindowOut,
+    DeviationPeriodOut,
     ExcursionEventOut,
     ExcursionsOut,
     ExposureBudgetDimensionOut,
@@ -33,6 +35,7 @@ from .schemas import (
     IncidentBoundaryOut,
     IncidentOut,
     IncidentsOut,
+    PeerBaselineDeviationOut,
     PropagationLagOut,
     PropagationOut,
     ReadingIn,
@@ -1046,6 +1049,72 @@ def build_propagation(
         best_lag_seconds=result.best_lag_seconds,
         best_correlation=result.best_correlation,
         direction=result.direction,
+    )
+
+
+# ---------- 展柜同伴基线偏离 ----------
+
+
+def build_peer_baseline_deviation(
+    db: Session,
+    target_sn: str,
+    peer_sns: list[str],
+    dimension: str,
+    start: dt.datetime,
+    end: dt.datetime,
+    step_seconds: float,
+    max_gap_seconds: float,
+    deviation_threshold: float,
+    min_duration_seconds: float,
+) -> PeerBaselineDeviationOut | None:
+    """目标展柜相对对照中位数基线的持续偏离时段（只读计算，不落库）。
+
+    目标展柜没有任何读数时返回 ``None``（由上层判 404）；对照展柜
+    没有读数不报错——该柜在全部网格时刻无效，有效对照值不足两个的
+    时刻中断判定，自然得到空结果。
+    """
+    target_samples = _load_samples(db, target_sn)
+    if not target_samples:
+        return None
+    peer_samples = [_load_samples(db, sn) for sn in peer_sns]
+
+    result = dev.compute_peer_baseline_deviation(
+        target_samples,
+        peer_samples,
+        dimension=dimension,
+        start=start,
+        end=end,
+        step_seconds=step_seconds,
+        max_gap_seconds=max_gap_seconds,
+        deviation_threshold=deviation_threshold,
+        min_duration_seconds=min_duration_seconds,
+    )
+    return PeerBaselineDeviationOut(
+        target_sn=target_sn,
+        peer_sns=list(peer_sns),
+        dimension=result.dimension,
+        start=result.start,
+        end=result.end,
+        step_seconds=result.step_seconds,
+        max_gap_seconds=result.max_gap_seconds,
+        deviation_threshold=result.deviation_threshold,
+        min_duration_seconds=result.min_duration_seconds,
+        grid_point_count=result.grid_point_count,
+        evaluated_count=result.evaluated_count,
+        marked_count=result.marked_count,
+        period_count=len(result.periods),
+        periods=[
+            DeviationPeriodOut(
+                start_ts=p.start_ts,
+                end_ts=p.end_ts,
+                duration_seconds=p.duration_seconds,
+                marked_count=p.marked_count,
+                direction=p.direction,
+                max_deviation=p.max_deviation,
+                peak_ts=p.peak_ts,
+            )
+            for p in result.periods
+        ],
     )
 
 
